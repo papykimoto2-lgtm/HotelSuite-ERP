@@ -421,6 +421,26 @@ textarea { resize: vertical; min-height: 80px; }
 .room-card.nettoyage .room-status { color:#D97706; }
 .room-card.hors-service .room-status { color:var(--text-dim); }
 
+/* Carte / Menu — grille d'articles avec image (commande en un clic) */
+.plat-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:10px; }
+.plat-card {
+  border-radius: var(--radius); border: 1px solid var(--border-soft);
+  cursor:pointer; transition:all 0.15s; text-align:center; overflow:hidden;
+  background: #fff; user-select:none;
+}
+.plat-card:hover { border-color:var(--gold); transform:translateY(-1px); box-shadow: 0 4px 12px rgba(212,160,23,0.15); }
+.plat-card img, .plat-card .plat-noimg {
+  width:100%; height:80px; object-fit:cover; display:block; background:#F5F7FA;
+}
+.plat-card .plat-noimg { display:flex; align-items:center; justify-content:center; font-size:26px; color:var(--text-dim); }
+.plat-name { font-size:11px; font-weight:600; padding:6px 6px 0; color:var(--charcoal); }
+.plat-price { font-size:10px; color:var(--gold-dark); padding:0 6px 6px; }
+.plat-thumb { width:36px; height:36px; object-fit:cover; border-radius:6px; }
+.plat-thumb-placeholder {
+  width:36px; height:36px; border-radius:6px; background:#F5F7FA;
+  display:flex; align-items:center; justify-content:center; color:var(--text-dim); font-size:14px;
+}
+
 /* Charts (SVG simple) */
 .chart-wrap { position:relative; }
 .chart-bars { display:flex; align-items:flex-end; gap:4px; height:100px; }
@@ -1156,7 +1176,7 @@ textarea { resize: vertical; min-height: 80px; }
             <div class="panel">
               <div class="panel-body" style="padding:0;">
                 <table>
-                  <thead><tr><th>Désignation</th><th>Catégorie</th><th>Département</th><th>Prix</th><th>Disponible</th><th>Actions</th></tr></thead>
+                  <thead><tr><th>Photo</th><th>Désignation</th><th>Catégorie</th><th>Département</th><th>Prix</th><th>Disponible</th><th>Actions</th></tr></thead>
                   <tbody id="tbody-carte"></tbody>
                 </table>
               </div>
@@ -2999,6 +3019,7 @@ function renderCarte() {
   if (!tbody) return;
   tbody.innerHTML = App.state.carte.map(p => `
     <tr>
+      <td>${p.image ? `<img src="${p.image}" class="plat-thumb" alt="">` : `<div class="plat-thumb-placeholder">🍽️</div>`}</td>
       <td>${esc(p.nom)}</td>
       <td><span class="badge badge-muted">${esc(p.cat)}</span></td>
       <td><span class="badge ${p.depot==='Bar'?'badge-blue':'badge-gold'}">${esc(p.depot||'Restaurant')}</span></td>
@@ -3008,7 +3029,7 @@ function renderCarte() {
         <button class="btn btn-sm btn-danger" onclick="deletePlat(${p.id})">🗑</button>
       </td>
     </tr>
-  `).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">Aucun article</td></tr>';
+  `).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px;">Aucun article</td></tr>';
 }
 
 function renderPresences() {
@@ -3519,7 +3540,13 @@ function renderCommandeModal() {
   const items = App.state.carte.filter(c => c.depot === dept && c.dispo !== false);
   const total = App._cart.lines.reduce((s, l) => s + l.prix * l.qte, 0);
   const itemsHtml = items.length
-    ? items.map(c => `<div class="stat-row"><span class="stat-label">${esc(c.nom)} — ${fmtMontant(c.prix)}</span><button class="btn btn-sm btn-secondary" onclick="ajouterLigneCommande(${c.id})">+ Ajouter</button></div>`).join('')
+    ? `<div class="plat-grid">` + items.map(c => `
+        <div class="plat-card" onclick="ajouterLigneCommande(${c.id})" title="Cliquer pour ajouter au panier">
+          ${c.image ? `<img src="${c.image}" alt="${esc(c.nom)}">` : `<div class="plat-noimg">🍽️</div>`}
+          <div class="plat-name">${esc(c.nom)}</div>
+          <div class="plat-price">${fmtMontant(c.prix)}</div>
+        </div>
+      `).join('') + `</div>`
     : `<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">Aucun article disponible pour ${esc(dept)}. Ajoutez-en depuis l'onglet Carte / Menu.</div>`;
   const cartHtml = App._cart.lines.length
     ? App._cart.lines.map((l, i) => `<div class="stat-row"><span class="stat-label">${l.qte} × ${esc(l.nom)}</span><span class="stat-val">${fmtMontant(l.prix * l.qte)} <button class="btn btn-sm btn-danger" onclick="retirerLigneCommande(${i})">🗑</button></span></div>`).join('')
@@ -3618,6 +3645,7 @@ function openModalPlat() {
         <select id="m-plat-depot"><option>Restaurant</option><option>Bar</option></select>
       </div>
       <div class="form-group"><label>Prix (FCFA)</label><input id="m-plat-prix" type="number"></div>
+      <div class="form-group span-2"><label>Photo (optionnel)</label><input id="m-plat-img" type="file" accept="image/*"></div>
     </div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Annuler</button>
@@ -3625,12 +3653,42 @@ function openModalPlat() {
   `);
 }
 
-function savePlat() {
+// Redimensionne et compresse une image sélectionnée en data URL JPEG,
+// pour éviter de stocker des photos brutes volumineuses en base.
+function readImageResized(file, maxSize) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.75));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function savePlat() {
   const nom = document.getElementById('m-plat-nom').value.trim();
   const prix = +document.getElementById('m-plat-prix').value;
   if (!nom || !prix) { showToast('Données requises', 'error'); return; }
+  const fileInput = document.getElementById('m-plat-img');
+  let image = null;
+  if (fileInput && fileInput.files && fileInput.files[0]) {
+    try { image = await readImageResized(fileInput.files[0], 400); }
+    catch { showToast('Image illisible, article ajouté sans photo', 'info'); }
+  }
   const row = {id: Date.now(), nom, cat: document.getElementById('m-plat-cat').value,
-    depot: document.getElementById('m-plat-depot').value, prix, dispo: true};
+    depot: document.getElementById('m-plat-depot').value, prix, dispo: true, image};
   App.state.carte.push(row);
   renderCarte();
   closeModal();
