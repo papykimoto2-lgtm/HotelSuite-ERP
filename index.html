@@ -1156,7 +1156,7 @@ textarea { resize: vertical; min-height: 80px; }
             <div class="panel">
               <div class="panel-body" style="padding:0;">
                 <table>
-                  <thead><tr><th>Désignation</th><th>Catégorie</th><th>Prix</th><th>Disponible</th><th>Actions</th></tr></thead>
+                  <thead><tr><th>Désignation</th><th>Catégorie</th><th>Département</th><th>Prix</th><th>Disponible</th><th>Actions</th></tr></thead>
                   <tbody id="tbody-carte"></tbody>
                 </table>
               </div>
@@ -1187,6 +1187,7 @@ textarea { resize: vertical; min-height: 80px; }
               </div>
               <div class="panel">
                 <div class="panel-body btn-group" style="align-items:center;">
+                  <button class="btn btn-primary" onclick="openModalCommande('Restaurant')">🧾 Nouvelle commande</button>
                   <button class="btn btn-success" onclick="openModalMouvementCaisse('Restaurant','recette')">+ Recette</button>
                   <button class="btn btn-danger" onclick="openModalMouvementCaisse('Restaurant','depense')">- Dépense</button>
                 </div>
@@ -1212,6 +1213,7 @@ textarea { resize: vertical; min-height: 80px; }
               </div>
               <div class="panel">
                 <div class="panel-body btn-group" style="align-items:center;">
+                  <button class="btn btn-primary" onclick="openModalCommande('Bar')">🧾 Nouvelle commande</button>
                   <button class="btn btn-success" onclick="openModalMouvementCaisse('Bar','recette')">+ Recette</button>
                   <button class="btn btn-danger" onclick="openModalMouvementCaisse('Bar','depense')">- Dépense</button>
                 </div>
@@ -1332,6 +1334,7 @@ textarea { resize: vertical; min-height: 80px; }
       <div class="view" id="view-stocks">
         <div class="tabs">
           <div class="tab active" onclick="switchTab(this,'stock-tabs','tab-inventaire')">Inventaire</div>
+          <div class="tab" onclick="switchTab(this,'stock-tabs','tab-transferts')">🔁 Transferts</div>
           <div class="tab" onclick="switchTab(this,'stock-tabs','tab-fournisseurs')">Fournisseurs</div>
           <div class="tab" onclick="switchTab(this,'stock-tabs','tab-commandes-achat')">Bons de commande</div>
         </div>
@@ -1340,12 +1343,33 @@ textarea { resize: vertical; min-height: 80px; }
             <div class="btn-group" style="margin-bottom:12px;">
               <button class="btn btn-primary" onclick="openModalArticle()">+ Article</button>
               <button class="btn btn-secondary" onclick="openModalMouvement()">📥 Entrée stock</button>
+              <button class="btn btn-secondary" onclick="openModalTransfertStock()">🔁 Transfert</button>
+              <select id="filter-stock-depot" onchange="renderStocks()" style="max-width:180px;">
+                <option value="">Tous dépôts</option>
+                <option>Central</option>
+                <option>Restaurant</option>
+                <option>Bar</option>
+              </select>
             </div>
             <div class="panel">
               <div class="panel-body" style="padding:0;">
                 <table>
-                  <thead><tr><th>Référence</th><th>Désignation</th><th>Catégorie</th><th>Stock actuel</th><th>Min.</th><th>Unité</th><th>Prix unit.</th><th>Statut</th></tr></thead>
+                  <thead><tr><th>Référence</th><th>Désignation</th><th>Catégorie</th><th>Dépôt</th><th>Stock actuel</th><th>Min.</th><th>Unité</th><th>Prix unit.</th><th>Statut</th></tr></thead>
                   <tbody id="tbody-stocks"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div id="tab-transferts" style="display:none;">
+            <div class="btn-group" style="margin-bottom:12px;">
+              <button class="btn btn-primary" onclick="openModalTransfertStock()">🔁 Nouveau transfert</button>
+            </div>
+            <div class="panel">
+              <div class="panel-header"><div class="panel-title">Historique des transferts entre dépôts</div></div>
+              <div class="panel-body" style="padding:0;">
+                <table>
+                  <thead><tr><th>Date</th><th>Article</th><th>Trajet</th><th>Quantité</th></tr></thead>
+                  <tbody id="tbody-transferts"></tbody>
                 </table>
               </div>
             </div>
@@ -2444,6 +2468,9 @@ const sb = (window.supabase && SUPABASE_URL.indexOf('YOUR-PROJECT') === -1)
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
   : null;
 
+// Dépôts fixes : Central (magasin général), Restaurant, Bar.
+const DEPOTS = ['Central', 'Restaurant', 'Bar'];
+
 // Tables Supabase synchronisées avec App.state (modules cœur de métier).
 const SB_TABLES = {
   chambres: 'chambres',
@@ -2451,7 +2478,9 @@ const SB_TABLES = {
   clients: 'clients',
   stocks: 'stocks',
   carte: 'carte',
-  mouvementsCaisse: 'mouvements_caisse'
+  mouvementsCaisse: 'mouvements_caisse',
+  notesFrais: 'notes_frais',
+  transfertsStock: 'transferts_stock'
 };
 
 function sbCall(promise) {
@@ -2489,7 +2518,9 @@ const App = {
     carte: [],
     presences: [],
     cartes: [],
-    accessLogs: []
+    accessLogs: [],
+    notesFrais: [],
+    transfertsStock: []
   }
 };
 
@@ -2829,18 +2860,36 @@ function renderChambres() {
 
 function renderStocks() {
   const tbody = document.getElementById('tbody-stocks');
-  tbody.innerHTML = App.state.stocks.map(s => `
+  const filter = document.getElementById('filter-stock-depot');
+  const depot = filter ? filter.value : '';
+  const rows = App.state.stocks.filter(s => !depot || s.depot === depot);
+  tbody.innerHTML = rows.map(s => `
     <tr>
       <td><span style="font-family:'Inter',monospace;font-size:11px;color:var(--text-muted)">${s.ref}</span></td>
       <td>${esc(s.nom)}</td>
       <td>${esc(s.cat)}</td>
+      <td><span class="badge badge-muted">${esc(s.depot||'Central')}</span></td>
       <td style="font-weight:600;${s.statut==='critique'?'color:var(--red)':s.statut==='alerte'?'color:var(--amber)':'color:var(--green)'}">${s.qte}</td>
       <td style="color:var(--text-muted)">${s.min}</td>
       <td>${esc(s.unit)}</td>
       <td>${fmtMontant(s.prix)}</td>
       <td>${s.statut==='critique'?'<span class="badge badge-red">Critique</span>':s.statut==='alerte'?'<span class="badge badge-amber">Alerte</span>':'<span class="badge badge-green">OK</span>'}</td>
     </tr>
-  `).join('');
+  `).join('') || '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:20px;">Aucun article</td></tr>';
+  renderTransferts();
+}
+
+function renderTransferts() {
+  const tbody = document.getElementById('tbody-transferts');
+  if (!tbody) return;
+  tbody.innerHTML = App.state.transfertsStock.map(t => `
+    <tr>
+      <td style="font-size:11px;color:var(--text-muted);">${formatDate(t.created_at)}</td>
+      <td>${esc(t.article_nom)}</td>
+      <td><span class="badge badge-muted">${esc(t.depot_source)}</span> → <span class="badge badge-blue">${esc(t.depot_dest)}</span></td>
+      <td style="font-weight:600;">${t.qte}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px;">Aucun transfert</td></tr>';
 }
 
 function renderCaisse() {
@@ -2952,13 +3001,14 @@ function renderCarte() {
     <tr>
       <td>${esc(p.nom)}</td>
       <td><span class="badge badge-muted">${esc(p.cat)}</span></td>
+      <td><span class="badge ${p.depot==='Bar'?'badge-blue':'badge-gold'}">${esc(p.depot||'Restaurant')}</span></td>
       <td style="color:var(--gold)">${fmtMontant(p.prix)}</td>
       <td>${p.dispo ? '<span class="badge badge-green">Disponible</span>' : '<span class="badge badge-red">Indispo.</span>'}</td>
       <td>
         <button class="btn btn-sm btn-danger" onclick="deletePlat(${p.id})">🗑</button>
       </td>
     </tr>
-  `).join('');
+  `).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">Aucun article</td></tr>';
 }
 
 function renderPresences() {
@@ -3074,18 +3124,25 @@ function loadCheckout(chambreId) {
   if (!ch) return;
   document.getElementById('co-client').value = ch.client;
   const res = App.state.reservations.find(r => r.chambre == ch.num && r.statut === 'checkin');
+  const extras = App.state.notesFrais.filter(n => n.chambre === ch.num && n.statut === 'impayee');
   const detail = document.getElementById('checkout-detail');
   const lines = document.getElementById('checkout-lines');
+  let html = '';
+  let total = 0;
   if (res) {
-    lines.innerHTML = `
-      <div class="stat-row"><span class="stat-label">Hébergement · ${res.nuits} nuit(s)</span><span class="stat-val">${fmtMontant(res.montant)}</span></div>
-      <div class="stat-row"><span class="stat-label">Dépôt de garantie</span><span class="stat-val green">-50 000 FCFA</span></div>
-    `;
-    document.getElementById('co-total').textContent = fmtMontant(res.montant - 50000);
+    html += `<div class="stat-row"><span class="stat-label">Hébergement · ${res.nuits} nuit(s)</span><span class="stat-val">${fmtMontant(res.montant)}</span></div>`;
+    html += `<div class="stat-row"><span class="stat-label">Dépôt de garantie</span><span class="stat-val green">-50 000 FCFA</span></div>`;
+    total = res.montant - 50000;
   } else {
-    lines.innerHTML = `<div class="stat-row"><span class="stat-label">Séjour</span><span class="stat-val">${fmtMontant(ch.tarif)}</span></div>`;
-    document.getElementById('co-total').textContent = fmtMontant(ch.tarif);
+    html += `<div class="stat-row"><span class="stat-label">Séjour</span><span class="stat-val">${fmtMontant(ch.tarif)}</span></div>`;
+    total = ch.tarif;
   }
+  extras.forEach(n => {
+    html += `<div class="stat-row"><span class="stat-label">${esc(n.departement)} — ${esc(n.libelle)}</span><span class="stat-val">${fmtMontant(n.montant)}</span></div>`;
+    total += n.montant;
+  });
+  lines.innerHTML = html;
+  document.getElementById('co-total').textContent = fmtMontant(total);
   detail.style.display = '';
 }
 
@@ -3094,6 +3151,10 @@ function doCheckout() {
   const ch = App.state.chambres.find(c => c.id == chambreId);
   if (!ch) { showToast('Sélectionnez une chambre', 'error'); return; }
   const client = ch.client;
+  App.state.notesFrais.filter(n => n.chambre === ch.num && n.statut === 'impayee').forEach(n => {
+    n.statut = 'reglee';
+    sbCall(sb && sb.from('notes_frais').update({statut: 'reglee'}).eq('id', n.id));
+  });
   ch.statut = 'nettoyage'; ch.client = '';
   sbCall(sb && sb.from('chambres').update({statut: ch.statut, client: ch.client}).eq('id', ch.id));
   renderChambres();
@@ -3314,6 +3375,9 @@ function openModalArticle() {
       <div class="form-group"><label>Catégorie</label>
         <select id="m-art-cat"><option>Boissons</option><option>Alimentation</option><option>Linge</option><option>Hygiène</option><option>Matériel</option></select>
       </div>
+      <div class="form-group"><label>Dépôt</label>
+        <select id="m-art-depot">${DEPOTS.map(d => `<option>${d}</option>`).join('')}</select>
+      </div>
       <div class="form-group"><label>Quantité initiale</label><input id="m-art-qte" type="number" value="0"></div>
       <div class="form-group"><label>Seuil minimum</label><input id="m-art-min" type="number" value="10"></div>
       <div class="form-group"><label>Unité</label><input id="m-art-unit" type="text" value="Pièce"></div>
@@ -3335,6 +3399,7 @@ function saveArticle() {
   const row = {
     id: Date.now(), ref, nom,
     cat: document.getElementById('m-art-cat').value,
+    depot: document.getElementById('m-art-depot').value,
     qte, min,
     unit: document.getElementById('m-art-unit').value,
     prix: +document.getElementById('m-art-prix').value,
@@ -3348,7 +3413,7 @@ function saveArticle() {
 }
 
 function openModalMouvement() {
-  const opts = App.state.stocks.map(s => `<option value="${s.id}">${s.nom} (stock: ${s.qte})</option>`).join('');
+  const opts = App.state.stocks.map(s => `<option value="${s.id}">${s.nom} — ${s.depot} (stock: ${s.qte})</option>`).join('');
   openModal('Entrée de stock', `
     <div class="form-grid">
       <div class="form-group span-2"><label>Article</label><select id="m-mvt-art">${opts}</select></div>
@@ -3374,17 +3439,183 @@ function saveMouvement() {
   sbCall(sb && sb.from('stocks').update({qte: art.qte, statut: art.statut}).eq('id', art.id));
 }
 
+function openModalTransfertStock() {
+  const opts = App.state.stocks.map(s => `<option value="${s.id}">${s.nom} — ${s.depot} (dispo: ${s.qte} ${s.unit})</option>`).join('');
+  if (!App.state.stocks.length) { showToast('Aucun article en stock à transférer', 'error'); return; }
+  openModal('Transfert entre dépôts', `
+    <div class="form-grid">
+      <div class="form-group span-2"><label>Article (dépôt source)</label><select id="m-tr-art">${opts}</select></div>
+      <div class="form-group"><label>Dépôt destination</label>
+        <select id="m-tr-dest">${DEPOTS.map(d => `<option>${d}</option>`).join('')}</select>
+      </div>
+      <div class="form-group"><label>Quantité à transférer</label><input id="m-tr-qte" type="number" min="1" value="1"></div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Annuler</button>
+    <button class="btn btn-primary" onclick="saveTransfertStock()">Transférer</button>
+  `);
+}
+
+function saveTransfertStock() {
+  const artId = +document.getElementById('m-tr-art').value;
+  const dest = document.getElementById('m-tr-dest').value;
+  const qte = +document.getElementById('m-tr-qte').value;
+  const source = App.state.stocks.find(s => s.id === artId);
+  if (!source || qte <= 0) { showToast('Données invalides', 'error'); return; }
+  if (source.depot === dest) { showToast('Le dépôt destination doit être différent du dépôt source', 'error'); return; }
+  if (qte > source.qte) { showToast('Quantité insuffisante dans le dépôt source', 'error'); return; }
+
+  source.qte -= qte;
+  source.statut = source.qte === 0 ? 'critique' : source.qte < source.min ? 'alerte' : 'ok';
+  sbCall(sb && sb.from('stocks').update({qte: source.qte, statut: source.statut}).eq('id', source.id));
+
+  let target = App.state.stocks.find(s => s.ref === source.ref && s.depot === dest);
+  if (target) {
+    target.qte += qte;
+    target.statut = target.qte === 0 ? 'critique' : target.qte < target.min ? 'alerte' : 'ok';
+    sbCall(sb && sb.from('stocks').update({qte: target.qte, statut: target.statut}).eq('id', target.id));
+  } else {
+    target = { id: Date.now()+1, ref: source.ref, nom: source.nom, cat: source.cat, depot: dest,
+      qte, min: source.min, unit: source.unit, prix: source.prix,
+      statut: qte === 0 ? 'critique' : qte < source.min ? 'alerte' : 'ok' };
+    App.state.stocks.push(target);
+    sbCall(sb && sb.from('stocks').upsert(target));
+  }
+
+  const log = { id: Date.now(), article_ref: source.ref, article_nom: source.nom,
+    depot_source: source.depot, depot_dest: dest, qte, effectue_par: 'Admin',
+    created_at: new Date().toISOString() };
+  App.state.transfertsStock.unshift(log);
+  sbCall(sb && sb.from('transferts_stock').upsert(log));
+
+  renderStocks();
+  closeModal();
+  showToast(`✅ ${qte} ${source.unit} de ${source.nom} transférés vers ${dest}`, 'success');
+}
+
 function openModalFournisseur() { showToast('Module fournisseur (étendu)', 'info'); }
 function openModalBonCommande() { showToast('Bon de commande (étendu)', 'info'); }
 function openModalConfReservation() { showToast('Réservation salle (étendu)', 'info'); }
 function openModalEvenement() { showToast('Événement (étendu)', 'info'); }
-function openModalCommande() { showToast('Nouvelle commande restaurant (étendu)', 'info'); }
+function openModalCommande(dept) {
+  if (!dept) {
+    openModal('Nouvelle commande', `
+      <div style="text-align:center;padding:12px;">
+        <p style="color:var(--text-muted);margin-bottom:16px;">Choisissez le département :</p>
+        <div class="btn-group" style="justify-content:center;">
+          <button class="btn btn-primary" onclick="openModalCommande('Restaurant')">🍽️ Restaurant</button>
+          <button class="btn btn-primary" onclick="openModalCommande('Bar')">🍹 Bar</button>
+        </div>
+      </div>
+    `, `<button class="btn btn-secondary" onclick="closeModal()">Annuler</button>`);
+    return;
+  }
+  if (!App._cart || App._cart.dept !== dept) App._cart = { dept, lines: [] };
+  renderCommandeModal();
+}
+
+function renderCommandeModal() {
+  const dept = App._cart.dept;
+  const items = App.state.carte.filter(c => c.depot === dept && c.dispo !== false);
+  const total = App._cart.lines.reduce((s, l) => s + l.prix * l.qte, 0);
+  const itemsHtml = items.length
+    ? items.map(c => `<div class="stat-row"><span class="stat-label">${esc(c.nom)} — ${fmtMontant(c.prix)}</span><button class="btn btn-sm btn-secondary" onclick="ajouterLigneCommande(${c.id})">+ Ajouter</button></div>`).join('')
+    : `<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">Aucun article disponible pour ${esc(dept)}. Ajoutez-en depuis l'onglet Carte / Menu.</div>`;
+  const cartHtml = App._cart.lines.length
+    ? App._cart.lines.map((l, i) => `<div class="stat-row"><span class="stat-label">${l.qte} × ${esc(l.nom)}</span><span class="stat-val">${fmtMontant(l.prix * l.qte)} <button class="btn btn-sm btn-danger" onclick="retirerLigneCommande(${i})">🗑</button></span></div>`).join('')
+    : `<div style="color:var(--text-muted);font-size:12px;">Panier vide</div>`;
+  const chambresOccupees = App.state.chambres.filter(c => c.statut === 'occupee');
+  const hasLines = App._cart.lines.length > 0;
+  openModal('Nouvelle commande — ' + dept, `
+    <div class="form-group"><label>Articles disponibles</label>${itemsHtml}</div>
+    <div class="sep"></div>
+    <div class="form-group"><label>Panier</label>${cartHtml}</div>
+    <div class="stat-row" style="margin-top:8px;"><span style="font-weight:600;">TOTAL</span><span class="stat-val gold" style="font-size:18px;">${fmtMontant(total)}</span></div>
+    ${chambresOccupees.length ? `
+    <div class="sep"></div>
+    <div class="form-group"><label>Chambre (si facturation client hôtel)</label>
+      <select id="m-cmd-chambre"><option value="">— Client de passage —</option>
+        ${chambresOccupees.map(c => `<option value="${c.id}">Ch.${esc(c.num)} — ${esc(c.client)}</option>`).join('')}
+      </select>
+    </div>` : ''}
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Annuler</button>
+    <button class="btn btn-primary" onclick="validerCommande('chambre')" ${hasLines ? '' : 'disabled'}>🏨 Facturer à la chambre</button>
+    <button class="btn btn-success" onclick="validerCommande('encaisser')" ${hasLines ? '' : 'disabled'}>💵 Encaisser</button>
+  `);
+}
+
+function ajouterLigneCommande(carteId) {
+  const item = App.state.carte.find(c => c.id === carteId);
+  if (!item) return;
+  const line = App._cart.lines.find(l => l.carteId === carteId);
+  if (line) line.qte += 1;
+  else App._cart.lines.push({ carteId, nom: item.nom, prix: item.prix, qte: 1 });
+  renderCommandeModal();
+}
+
+function retirerLigneCommande(index) {
+  App._cart.lines.splice(index, 1);
+  renderCommandeModal();
+}
+
+function validerCommande(mode) {
+  const cart = App._cart;
+  if (!cart || !cart.lines.length) return;
+  const dept = cart.dept;
+  const total = cart.lines.reduce((s, l) => s + l.prix * l.qte, 0);
+  const resume = cart.lines.map(l => l.qte + '×' + l.nom).join(', ');
+
+  if (mode === 'chambre') {
+    const chambreId = document.getElementById('m-cmd-chambre') ? document.getElementById('m-cmd-chambre').value : '';
+    const ch = chambreId ? App.state.chambres.find(c => c.id == chambreId) : null;
+    if (!ch) { showToast('Sélectionnez une chambre à facturer', 'error'); return; }
+  }
+
+  // Décrément du stock du dépôt correspondant (par nom d'article).
+  let stockManquant = false;
+  cart.lines.forEach(l => {
+    const stockRow = App.state.stocks.find(s => s.depot === dept && s.nom.toLowerCase() === l.nom.toLowerCase());
+    if (stockRow) {
+      stockRow.qte = Math.max(0, stockRow.qte - l.qte);
+      stockRow.statut = stockRow.qte === 0 ? 'critique' : stockRow.qte < stockRow.min ? 'alerte' : 'ok';
+      sbCall(sb && sb.from('stocks').update({qte: stockRow.qte, statut: stockRow.statut}).eq('id', stockRow.id));
+    } else {
+      stockManquant = true;
+    }
+  });
+  renderStocks();
+
+  if (mode === 'encaisser') {
+    const now = new Date();
+    const heure = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+    const row = { id: Date.now(), heure, libelle: 'Commande: ' + resume, mode: 'Espèces', recette: total, depense: 0, caissier: 'Admin', departement: dept };
+    App.state.mouvementsCaisse.unshift(row);
+    renderCaisse();
+    sbCall(sb && sb.from('mouvements_caisse').upsert(row));
+    showToast('✅ Commande encaissée — ' + fmtMontant(total), 'success');
+  } else {
+    const chambreId = document.getElementById('m-cmd-chambre').value;
+    const ch = App.state.chambres.find(c => c.id == chambreId);
+    const row = { id: Date.now(), chambre: ch.num, client: ch.client, departement: dept, libelle: 'Commande: ' + resume, montant: total, statut: 'impayee' };
+    App.state.notesFrais.push(row);
+    sbCall(sb && sb.from('notes_frais').upsert(row));
+    showToast('🏨 ' + fmtMontant(total) + ' facturé à la Ch.' + ch.num, 'success');
+  }
+
+  if (stockManquant) showToast('⚠️ Certains articles ne sont pas suivis en stock', 'info');
+  App._cart = null;
+  closeModal();
+}
 function openModalPlat() {
   openModal('Nouveau plat / article carte', `
     <div class="form-grid">
       <div class="form-group"><label>Désignation</label><input id="m-plat-nom" type="text"></div>
       <div class="form-group"><label>Catégorie</label>
         <select id="m-plat-cat"><option>Plat principal</option><option>Entrée</option><option>Dessert</option><option>Boisson</option><option>Grillades</option></select>
+      </div>
+      <div class="form-group"><label>Département</label>
+        <select id="m-plat-depot"><option>Restaurant</option><option>Bar</option></select>
       </div>
       <div class="form-group"><label>Prix (FCFA)</label><input id="m-plat-prix" type="number"></div>
     </div>
@@ -3398,7 +3629,8 @@ function savePlat() {
   const nom = document.getElementById('m-plat-nom').value.trim();
   const prix = +document.getElementById('m-plat-prix').value;
   if (!nom || !prix) { showToast('Données requises', 'error'); return; }
-  const row = {id: Date.now(), nom, cat: document.getElementById('m-plat-cat').value, prix, dispo: true};
+  const row = {id: Date.now(), nom, cat: document.getElementById('m-plat-cat').value,
+    depot: document.getElementById('m-plat-depot').value, prix, dispo: true};
   App.state.carte.push(row);
   renderCarte();
   closeModal();
