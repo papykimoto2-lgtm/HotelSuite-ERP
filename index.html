@@ -554,6 +554,23 @@ textarea { resize: vertical; min-height: 80px; }
 <div id="toast-container"></div>
 <div id="sidebar-backdrop" onclick="closeMobileSidebar()"></div>
 
+<!-- AUTHENTIFICATION -->
+<div id="auth-overlay" class="modal-overlay open" style="z-index:20000;">
+  <div class="modal" style="max-width:360px;">
+    <div class="modal-header"><div class="modal-title">HotelSuite ERP — Connexion</div></div>
+    <div class="modal-body">
+      <div class="form-grid cols-1">
+        <div class="form-group"><label>Email</label><input type="email" id="auth-email" placeholder="vous@hotel.com" autocomplete="username"></div>
+        <div class="form-group"><label>Mot de passe</label><input type="password" id="auth-password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+      </div>
+      <div id="auth-error" style="color:var(--red);font-size:12px;margin-top:10px;display:none;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doLogin()">Se connecter</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL GLOBAL -->
 <div id="app">
   <!-- SIDEBAR -->
@@ -2359,11 +2376,50 @@ ZKTeco ML10 / ML100
 <!-- INPUT FILE HIDDEN pour import -->
 <input type="file" id="import-file" accept=".json" style="display:none" onchange="loadImport(this)">
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 // ============================================================
 // HOTELSUITE ERP — Sanix Africa
-// Architecture : SPA monobloc, IndexedDB, vanilla JS
+// Architecture : SPA monobloc, Supabase (Auth + Postgres),
+// avec repli IndexedDB local si aucun backend n'est configuré.
 // ============================================================
+
+// ======= CONFIG SUPABASE =======
+// Projet client : Espace Cyr Songon (org immosuite)
+const SUPABASE_URL = 'https://lzplxzmlasnezajcgqfa.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_MK7OwufUy-cZiTBCbSEp8g_yVY6d5RD';
+const sb = (window.supabase && SUPABASE_URL.indexOf('YOUR-PROJECT') === -1)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
+// Tables Supabase synchronisées avec App.state (modules cœur de métier).
+const SB_TABLES = {
+  chambres: 'chambres',
+  reservations: 'reservations',
+  clients: 'clients',
+  stocks: 'stocks',
+  carte: 'carte',
+  mouvementsCaisse: 'mouvements_caisse'
+};
+
+function sbCall(promise) {
+  if (!promise) return;
+  promise.then(res => { if (res && res.error) console.error('Supabase sync error:', res.error); });
+}
+
+// Seule la table clients a des noms de colonnes différents du state JS (snake_case en base).
+const SB_TO_DB = {
+  clients: c => ({ id:c.id, nom:c.nom, tel:c.tel, email:c.email, nationalite:c.nationalite,
+    type_piece:c.typePiece, num_piece:c.numPiece, type:c.type, sejours:c.sejours||0,
+    points:c.points||0, depenses:c.depenses||0, fidelite:c.fidelite, statut:c.statut||'Actif' })
+};
+const SB_FROM_DB = {
+  clients: r => ({ id:r.id, nom:r.nom, tel:r.tel, email:r.email, nationalite:r.nationalite,
+    typePiece:r.type_piece, numPiece:r.num_piece, type:r.type, sejours:r.sejours,
+    points:r.points, depenses:r.depenses, fidelite:r.fidelite, statut:r.statut })
+};
+function toDbRow(key, row) { return (SB_TO_DB[key] || (r => r))(row); }
+function fromDbRow(key, row) { return (SB_FROM_DB[key] || (r => r))(row); }
 
 // ======= ÉTAT GLOBAL =======
 const App = {
@@ -2387,27 +2443,84 @@ const App = {
 
 // ======= INIT =======
 document.addEventListener('DOMContentLoaded', () => {
-  initDB().then(() => {
-    loadSampleData();
-    renderAll();
-    initNav();
-    initChart();
-    const presenceDate = document.getElementById('presence-date');
-    if (presenceDate) presenceDate.textContent = new Date().toLocaleDateString('fr-FR', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
-    populateChambreSelects();
-    navTo('dashboard'); // force affichage du tableau de bord
-    showToast('✅ HotelSuite ERP chargé', 'success');
-  }).catch(() => {
-    // fallback si IndexedDB échoue (ex: fichier local)
-    loadSampleData();
-    renderAll();
-    initNav();
-    initChart();
-    populateChambreSelects();
-    navTo('dashboard');
-    showToast('✅ HotelSuite ERP chargé', 'success');
+  initNav();
+
+  if (!sb) {
+    // Aucun backend Supabase configuré : mode démo local (IndexedDB).
+    document.getElementById('auth-overlay').classList.remove('open');
+    initDB().then(() => {
+      loadSampleData();
+      afterDataLoaded();
+    }).catch(() => {
+      loadSampleData();
+      afterDataLoaded();
+    });
+    return;
+  }
+
+  sb.auth.onAuthStateChange((_event, session) => {
+    if (session) onAuthenticated();
+  });
+  sb.auth.getSession().then(({ data }) => {
+    if (data.session) onAuthenticated();
   });
 });
+
+async function doLogin() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const errEl = document.getElementById('auth-error');
+  errEl.style.display = 'none';
+  if (!sb) return;
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) { errEl.textContent = error.message; errEl.style.display = ''; }
+}
+
+function doLogout() {
+  if (sb) sb.auth.signOut();
+  location.reload();
+}
+
+async function onAuthenticated() {
+  document.getElementById('auth-overlay').classList.remove('open');
+  await loadFromSupabase();
+  afterDataLoaded();
+}
+
+function afterDataLoaded() {
+  renderAll();
+  initChart();
+  const presenceDate = document.getElementById('presence-date');
+  if (presenceDate) presenceDate.textContent = new Date().toLocaleDateString('fr-FR', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
+  populateChambreSelects();
+  navTo('dashboard'); // force affichage du tableau de bord
+  showToast('✅ HotelSuite ERP chargé', 'success');
+}
+
+// ======= CHARGEMENT / SEED SUPABASE (modules cœur) =======
+async function loadFromSupabase() {
+  const entries = Object.entries(SB_TABLES);
+  const results = await Promise.all(entries.map(([, table]) => sb.from(table).select('*')));
+  let empty = true;
+  entries.forEach(([key], i) => {
+    const { data, error } = results[i];
+    if (error) { console.error('Supabase load', key, error); return; }
+    if (data && data.length) empty = false;
+    App.state[key] = (data || []).map(r => fromDbRow(key, r));
+  });
+  // Modules non encore synchronisés avec Supabase : conservent des données de démo locales.
+  loadSampleData({ keep: empty ? [] : Object.keys(SB_TABLES) });
+  if (empty) {
+    await seedSupabase();
+  }
+}
+
+async function seedSupabase() {
+  for (const [key, table] of Object.entries(SB_TABLES)) {
+    const rows = (App.state[key] || []).map(r => toDbRow(key, r));
+    if (rows.length) sbCall(await sb.from(table).upsert(rows));
+  }
+}
 
 // ======= INDEXEDDB =======
 function initDB() {
@@ -2444,95 +2557,21 @@ function dbGetAll(store) {
 }
 
 // ======= DONNÉES EXEMPLES =======
-function loadSampleData() {
-  // Chambres
-  App.state.chambres = [
-    {id:1,num:'101',type:'Standard',etage:1,tarif:25000,statut:'occupee',client:'M. Kouadio'},
-    {id:2,num:'102',type:'Standard',etage:1,tarif:25000,statut:'libre',client:''},
-    {id:3,num:'103',type:'Standard',etage:1,tarif:25000,statut:'reservee',client:'Mme Bamba'},
-    {id:4,num:'104',type:'Standard',etage:1,tarif:25000,statut:'nettoyage',client:''},
-    {id:5,num:'105',type:'Standard',etage:1,tarif:25000,statut:'libre',client:''},
-    {id:6,num:'201',type:'Supérieure',etage:2,tarif:40000,statut:'occupee',client:'M. Traoré'},
-    {id:7,num:'202',type:'Supérieure',etage:2,tarif:40000,statut:'occupee',client:'STE PALMCI'},
-    {id:8,num:'203',type:'Supérieure',etage:2,tarif:40000,statut:'libre',client:''},
-    {id:9,num:'204',type:'Supérieure',etage:2,tarif:40000,statut:'occupee',client:'M. Koné'},
-    {id:10,num:'205',type:'Supérieure',etage:2,tarif:40000,statut:'reservee',client:'Diallo Ibrahim'},
-    {id:11,num:'301',type:'Suite',etage:3,tarif:80000,statut:'libre',client:''},
-    {id:12,num:'302',type:'Suite',etage:3,tarif:80000,statut:'occupee',client:'M. Diabaté'},
-    {id:13,num:'303',type:'Suite',etage:3,tarif:80000,statut:'hors-service',client:''},
-    {id:14,num:'R01',type:'Résidence',etage:0,tarif:120000,statut:'occupee',client:'Famille Konan'},
-    {id:15,num:'R02',type:'Résidence',etage:0,tarif:120000,statut:'libre',client:''},
-  ];
+function loadSampleData(opts) {
+  // Aucune donnée de démonstration : un nouveau client démarre avec une base vide.
+  // Le personnel saisit chambres, réservations, clients, stocks, carte et caisse
+  // via les formulaires de l'application.
+  const keep = (opts && opts.keep) || [];
+  const set = (key, val) => { if (!keep.includes(key)) App.state[key] = val; };
 
-  // Réservations
-  App.state.reservations = [
-    {id:1,num:'RES-2025-001',client:'M. Diallo Ibrahim',chambre:'205',arrivee:'2025-06-05',depart:'2025-06-08',nuits:3,montant:120000,statut:'confirmee',mode:'Espèces'},
-    {id:2,num:'RES-2025-002',client:'Mme Yao Christine',chambre:'105',arrivee:'2025-06-05',depart:'2025-06-06',nuits:1,montant:25000,statut:'attente',mode:'Wave'},
-    {id:3,num:'RES-2025-003',client:'STE PALMCI',chambre:'202',arrivee:'2025-06-01',depart:'2025-06-06',nuits:5,montant:200000,statut:'checkin',mode:'Virement'},
-    {id:4,num:'RES-2025-004',client:'M. Kouadio Jean',chambre:'101',arrivee:'2025-06-03',depart:'2025-06-05',nuits:2,montant:50000,statut:'checkin',mode:'Carte bancaire'},
-    {id:5,num:'RES-2025-005',client:'Groupe SIFCA',chambre:'Multiple',arrivee:'2025-06-10',depart:'2025-06-12',nuits:2,montant:480000,statut:'confirmee',mode:'Virement'},
-  ];
-
-  // Clients
-  App.state.clients = [
-    {id:1,nom:'Diallo Ibrahim',tel:'+225 07 12 34 56',email:'diallo@email.com',nationalite:'Ivoirienne',typePiece:'CNI',numPiece:'CI-2019-001234',type:'vip',sejours:8,points:4200,depenses:3850000},
-    {id:2,nom:'Yao Christine',tel:'+225 05 98 76 54',email:'yao.c@email.com',nationalite:'Ivoirienne',typePiece:'Passeport',numPiece:'PA-987654',type:'particulier',sejours:2,points:180,depenses:180000},
-    {id:3,nom:'STE PALMCI',tel:'+225 21 23 45 67',email:'rh@palmci.ci',nationalite:'—',typePiece:'RC',numPiece:'AB/CI/2010/B12345',type:'entreprise',sejours:18,points:8900,depenses:9200000},
-    {id:4,nom:'Groupe SIFCA',tel:'+225 21 00 11 22',email:'voyage@sifca.ci',nationalite:'—',typePiece:'RC',numPiece:'AB/CI/2005/B00987',type:'entreprise',sejours:24,points:12400,depenses:14500000},
-    {id:5,nom:'Koné Séydou',tel:'+225 07 77 88 99',email:'kone.s@gmail.com',nationalite:'Malienne',typePiece:'Passeport',numPiece:'ML-456789',type:'particulier',sejours:1,points:50,depenses:50000},
-    {id:6,nom:'Traoré Mariam',tel:'+225 05 44 55 66',email:'mariam.t@email.com',nationalite:'Ivoirienne',typePiece:'CNI',numPiece:'CI-2021-567890',type:'particulier',sejours:3,points:650,depenses:650000},
-    {id:7,nom:'NSIA Assurances',tel:'+225 20 31 00 00',email:'events@nsia.ci',nationalite:'—',typePiece:'RC',numPiece:'AB/CI/2001/B00123',type:'entreprise',sejours:12,points:5200,depenses:5800000},
-    {id:8,nom:'Mme Leconte Sophie',tel:'+33 6 12 34 56 78',email:'sleconte@gmail.com',nationalite:'Française',typePiece:'Passeport',numPiece:'FR-12345678',type:'vip',sejours:6,points:2800,depenses:2200000},
-    {id:9,nom:'African Tours CI',tel:'+225 21 55 66 77',email:'resa@africantours.ci',nationalite:'—',typePiece:'RC',numPiece:'AB/CI/2015/B04567',type:'tour-operateur',sejours:35,points:18500,depenses:22000000},
-    {id:10,nom:'Bamba Oumar',tel:'+225 01 23 45 67',email:'bamba.o@yahoo.fr',nationalite:'Sénégalaise',typePiece:'CNI',numPiece:'SN-2018-098765',type:'particulier',sejours:4,points:920,depenses:920000},
-  ];
-
-  // Employes enrichis
-  App.state.employes = [
-    {id:1,matricule:'EMP-001',nom:'Ouédraogo Adama',poste:'Directeur Général',dept:'Direction',tel:'+225 07 00 01 01',embauche:'2020-01-15',salaire:450000,statut:'Actif'},
-    {id:2,matricule:'EMP-002',nom:'Coulibaly Mariam',poste:'Réceptionniste',dept:'Accueil',tel:'+225 05 00 02 02',embauche:'2021-03-01',salaire:150000,statut:'Actif'},
-    {id:3,matricule:'EMP-003',nom:'Bamba Issouf',poste:'Chef Cuisinier',dept:'Restaurant',tel:'+225 07 00 03 03',embauche:'2021-06-15',salaire:200000,statut:'Actif'},
-    {id:4,matricule:'EMP-004',nom:'Traoré Aminata',poste:'Femme de chambre',dept:'Hébergement',tel:'+225 05 00 04 04',embauche:'2022-09-01',salaire:120000,statut:'Actif'},
-    {id:5,matricule:'EMP-005',nom:'Konan Yves',poste:'Agent de sécurité',dept:'Sécurité',tel:'+225 07 00 05 05',embauche:'2023-01-10',salaire:100000,statut:'Actif'},
-    {id:6,matricule:'EMP-006',nom:'Sanogo Fatoumata',poste:'Caissière',dept:'Finance',tel:'+225 05 00 06 06',embauche:'2022-03-15',salaire:140000,statut:'Actif'},
-    {id:7,matricule:'EMP-007',nom:'Diomandé Youssouf',poste:'Responsable Spa',dept:'Spa & Piscine',tel:'+225 07 00 07 07',embauche:'2021-11-01',salaire:180000,statut:'Actif'},
-  ];
-
-  // Stocks
-  App.state.stocks = [
-    {id:1,ref:'ART-001',nom:'Eau minérale 0,5L',cat:'Boissons',qte:12,min:50,unit:'Bouteille',prix:350,statut:'critique'},
-    {id:2,ref:'ART-002',nom:'Bière Castel 65cl',cat:'Boissons',qte:48,min:24,unit:'Bouteille',prix:900,statut:'ok'},
-    {id:3,ref:'ART-003',nom:'Serviettes de bain',cat:'Linge',qte:8,min:20,unit:'Pièce',prix:5000,statut:'alerte'},
-    {id:4,ref:'ART-004',nom:'Savon douche 200ml',cat:'Hygiène',qte:24,min:30,unit:'Flacon',prix:1200,statut:'alerte'},
-    {id:5,ref:'ART-005',nom:'Café dosettes',cat:'Alimentation',qte:5,min:20,unit:'Boîte',prix:3500,statut:'critique'},
-    {id:6,ref:'ART-006',nom:'Papier hygiénique',cat:'Hygiène',qte:96,min:50,unit:'Rouleau',prix:250,statut:'ok'},
-    {id:7,ref:'ART-007',nom:'Draps sets',cat:'Linge',qte:45,min:30,unit:'Set',prix:8000,statut:'ok'},
-  ];
-
-  // Carte restaurant
-  App.state.carte = [
-    {id:1,nom:'Thiéboudienne',cat:'Plat principal',prix:5500,dispo:true},
-    {id:2,nom:'Poulet braisé + Attiéké',cat:'Plat principal',prix:4500,dispo:true},
-    {id:3,nom:'Brochettes de bœuf',cat:'Grillades',prix:6000,dispo:true},
-    {id:4,nom:'Salade Niçoise',cat:'Entrée',prix:2500,dispo:true},
-    {id:5,nom:'Crème brûlée',cat:'Dessert',prix:2000,dispo:true},
-    {id:6,nom:'Jus bissap',cat:'Boisson',prix:800,dispo:true},
-  ];
-
-  // Mouvements caisse
-  App.state.mouvementsCaisse = [
-    {id:1,heure:'09:12',libelle:'Check-out Mme Ouattara Ch.112',mode:'Espèces',recette:75000,depense:0,caissier:'Coulibaly M.'},
-    {id:2,heure:'09:45',libelle:'Check-in M. Koné dépôt garantie',mode:'Wave',recette:50000,depense:0,caissier:'Coulibaly M.'},
-    {id:3,heure:'10:15',libelle:'Restaurant déjeuner Table 5',mode:'Carte',recette:32500,depense:0,caissier:'Coulibaly M.'},
-    {id:4,heure:'11:00',libelle:'Achat carburant groupe élec.',mode:'Espèces',recette:0,depense:45000,caissier:'Admin'},
-    {id:5,heure:'12:30',libelle:'Réservation salle Ivoire NSIA',mode:'Virement',recette:480000,depense:0,caissier:'Admin'},
-  ];
-
-  // Présences
-  App.state.presences = App.state.employes.map(e => ({
-    id: e.id, nom: e.nom, poste: e.poste,
-    arrivee: '08:00', depart: '', statut: 'present'
-  }));
+  set('chambres', []);
+  set('reservations', []);
+  set('clients', []);
+  App.state.employes = [];
+  set('stocks', []);
+  set('carte', []);
+  set('mouvementsCaisse', []);
+  App.state.presences = [];
 }
 
 // ======= NAVIGATION =======
@@ -2911,7 +2950,10 @@ function doCheckin() {
   const chambre = document.getElementById('ci-chambre').value;
   if (!client || !chambre) { showToast('Remplissez les champs obligatoires', 'error'); return; }
   const ch = App.state.chambres.find(c => c.id == chambre);
-  if (ch) { ch.statut = 'occupee'; ch.client = client; }
+  if (ch) {
+    ch.statut = 'occupee'; ch.client = client;
+    sbCall(sb && sb.from('chambres').update({statut: ch.statut, client: ch.client}).eq('id', ch.id));
+  }
   renderChambres();
   populateChambreSelects();
   showToast('✅ Check-in enregistré pour ' + client, 'success');
@@ -2944,6 +2986,7 @@ function doCheckout() {
   if (!ch) { showToast('Sélectionnez une chambre', 'error'); return; }
   const client = ch.client;
   ch.statut = 'nettoyage'; ch.client = '';
+  sbCall(sb && sb.from('chambres').update({statut: ch.statut, client: ch.client}).eq('id', ch.id));
   renderChambres();
   populateChambreSelects();
   document.getElementById('checkout-detail').style.display = 'none';
@@ -2998,7 +3041,25 @@ function openModalReservation() {
   `);
 }
 
-function saveReservation() {
+async function nextReservationNum() {
+  if (sb) {
+    const { data, error } = await sb.rpc('next_reservation_number');
+    if (!error && data) return data;
+    console.error('Supabase next_reservation_number', error);
+  }
+  // Repli local (mode démo / hors-ligne) : jamais de réutilisation d'un numéro déjà attribué.
+  const year = new Date().getFullYear();
+  if (typeof App.state._resCounter !== 'number') {
+    App.state._resCounter = App.state.reservations.reduce((max, r) => {
+      const m = /^RES-(\d{4})-(\d+)$/.exec(r.num || '');
+      return (m && +m[1] === year) ? Math.max(max, +m[2]) : max;
+    }, 0);
+  }
+  App.state._resCounter += 1;
+  return 'RES-' + year + '-' + String(App.state._resCounter).padStart(3, '0');
+}
+
+async function saveReservation() {
   const client = document.getElementById('m-client').value.trim();
   const chambre = document.getElementById('m-chambre').value;
   const arr = document.getElementById('m-arr').value;
@@ -3010,18 +3071,22 @@ function saveReservation() {
   const ch = App.state.chambres.find(c => c.num === chambre);
   const montant = ch ? nuits * ch.tarif : 0;
   const id = Date.now();
-  const num = 'RES-' + new Date().getFullYear() + '-' + String(App.state.reservations.length + 1).padStart(3,'0');
-  App.state.reservations.unshift({id, num, client, chambre, arrivee:arr, depart:dep, nuits, montant, statut, mode});
+  const num = await nextReservationNum();
+  const row = {id, num, client, chambre, arrivee:arr, depart:dep, nuits, montant, statut, mode};
+  App.state.reservations.unshift(row);
   if (ch && statut === 'confirmee') { ch.statut = 'reservee'; ch.client = client; }
   renderReservations(); renderChambres();
   closeModal();
   showToast('✅ Réservation ' + num + ' créée', 'success');
+  sbCall(sb && sb.from('reservations').upsert(row));
+  if (sb && ch && statut === 'confirmee') sbCall(sb.from('chambres').update({statut: ch.statut, client: ch.client}).eq('id', ch.id));
 }
 
 function deleteReservation(id) {
   App.state.reservations = App.state.reservations.filter(r => r.id !== id);
   renderReservations();
   showToast('Réservation supprimée', 'info');
+  sbCall(sb && sb.from('reservations').delete().eq('id', id));
 }
 
 function editReservation(id) {
@@ -3050,10 +3115,12 @@ function saveChambre() {
   const etage = +document.getElementById('m-ch-etage').value;
   const tarif = +document.getElementById('m-ch-tarif').value;
   if (!num || !tarif) { showToast('Numéro et tarif requis', 'error'); return; }
-  App.state.chambres.push({id: Date.now(), num, type, etage, tarif, statut:'libre', client:''});
+  const row = {id: Date.now(), num, type, etage, tarif, statut:'libre', client:''};
+  App.state.chambres.push(row);
   renderChambres();
   closeModal();
   showToast('Chambre ' + num + ' ajoutée', 'success');
+  sbCall(sb && sb.from('chambres').upsert(row));
 }
 
 function openModalChambreDetail(id) {
@@ -3064,7 +3131,7 @@ function openModalChambreDetail(id) {
     <div class="stat-row"><span class="stat-label">Étage</span><span class="stat-val">${ch.etage}</span></div>
     <div class="stat-row"><span class="stat-label">Tarif/nuit</span><span class="stat-val gold">${fmtMontant(ch.tarif)}</span></div>
     <div class="stat-row"><span class="stat-label">Statut</span><span class="stat-val">${statutLabel(ch.statut)}</span></div>
-    ${ch.client ? `<div class="stat-row"><span class="stat-label">Client</span><span class="stat-val">${ch.client}</span></div>` : ''}
+    ${ch.client ? `<div class="stat-row"><span class="stat-label">Client</span><span class="stat-val">${esc(ch.client)}</span></div>` : ''}
     <div class="sep"></div>
     <div class="form-group"><label>Changer statut</label>
       <select id="m-ch-statut-change">
@@ -3086,6 +3153,7 @@ function changerStatutChambre(id) {
   renderChambres();
   closeModal();
   showToast('Statut Ch.' + ch.num + ' mis à jour', 'success');
+  sbCall(sb && sb.from('chambres').update({statut: ch.statut, client: ch.client}).eq('id', ch.id));
 }
 
 function openModalClient() {
@@ -3108,21 +3176,25 @@ function openModalClient() {
 function saveClient() {
   const nom = document.getElementById('m-cl-nom').value.trim();
   if (!nom) { showToast('Nom requis', 'error'); return; }
-  App.state.clients.push({
+  const row = {
     id: Date.now(), nom,
     tel: document.getElementById('m-cl-tel').value,
     email: document.getElementById('m-cl-email').value,
+    nationalite: document.getElementById('m-cl-nat').value,
     type: document.getElementById('m-cl-type').value,
     sejours: 0, fidelite: 'Bronze', statut: 'Actif'
-  });
+  };
+  App.state.clients.push(row);
   renderClients();
   closeModal();
   showToast('Client ' + nom + ' ajouté', 'success');
+  sbCall(sb && sb.from('clients').upsert(toDbRow('clients', row)));
 }
 
 function deleteClient(id) {
   App.state.clients = App.state.clients.filter(c => c.id !== id);
   renderClients();
+  sbCall(sb && sb.from('clients').delete().eq('id', id));
 }
 function editClient(id) { showToast('Édition client #'+id, 'info'); }
 
@@ -3151,17 +3223,19 @@ function saveArticle() {
   const min = +document.getElementById('m-art-min').value;
   const ref = 'ART-' + String(App.state.stocks.length + 1).padStart(3, '0');
   const statut = qte === 0 ? 'critique' : qte < min ? 'alerte' : 'ok';
-  App.state.stocks.push({
+  const row = {
     id: Date.now(), ref, nom,
     cat: document.getElementById('m-art-cat').value,
     qte, min,
     unit: document.getElementById('m-art-unit').value,
     prix: +document.getElementById('m-art-prix').value,
     statut
-  });
+  };
+  App.state.stocks.push(row);
   renderStocks();
   closeModal();
   showToast('Article ' + nom + ' ajouté', 'success');
+  sbCall(sb && sb.from('stocks').upsert(row));
 }
 
 function openModalMouvement() {
@@ -3188,6 +3262,7 @@ function saveMouvement() {
   renderStocks();
   closeModal();
   showToast('Stock ' + art.nom + ' mis à jour: ' + art.qte + ' ' + art.unit, 'success');
+  sbCall(sb && sb.from('stocks').update({qte: art.qte, statut: art.statut}).eq('id', art.id));
 }
 
 function openModalFournisseur() { showToast('Module fournisseur (étendu)', 'info'); }
@@ -3214,14 +3289,17 @@ function savePlat() {
   const nom = document.getElementById('m-plat-nom').value.trim();
   const prix = +document.getElementById('m-plat-prix').value;
   if (!nom || !prix) { showToast('Données requises', 'error'); return; }
-  App.state.carte.push({id: Date.now(), nom, cat: document.getElementById('m-plat-cat').value, prix, dispo: true});
+  const row = {id: Date.now(), nom, cat: document.getElementById('m-plat-cat').value, prix, dispo: true};
+  App.state.carte.push(row);
   renderCarte();
   closeModal();
   showToast(nom + ' ajouté à la carte', 'success');
+  sbCall(sb && sb.from('carte').upsert(row));
 }
 function deletePlat(id) {
   App.state.carte = App.state.carte.filter(p => p.id !== id);
   renderCarte();
+  sbCall(sb && sb.from('carte').delete().eq('id', id));
 }
 
 function openModalRecette() {
@@ -3245,10 +3323,12 @@ function saveRecette() {
   if (!lib || !mnt) { showToast('Données requises', 'error'); return; }
   const now = new Date();
   const heure = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
-  App.state.mouvementsCaisse.unshift({id:Date.now(), heure, libelle:lib, mode:document.getElementById('m-rec-mode').value, recette:mnt, depense:0, caissier:'Admin'});
+  const row = {id:Date.now(), heure, libelle:lib, mode:document.getElementById('m-rec-mode').value, recette:mnt, depense:0, caissier:'Admin'};
+  App.state.mouvementsCaisse.unshift(row);
   renderCaisse();
   closeModal();
   showToast('+' + fmtMontant(mnt) + ' enregistré', 'success');
+  sbCall(sb && sb.from('mouvements_caisse').upsert(row));
 }
 
 function openModalDepense() {
@@ -3272,10 +3352,12 @@ function saveDepense() {
   if (!lib || !mnt) { showToast('Données requises', 'error'); return; }
   const now = new Date();
   const heure = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
-  App.state.mouvementsCaisse.unshift({id:Date.now(), heure, libelle:lib, mode:'Espèces', recette:0, depense:mnt, caissier:'Admin'});
+  const row = {id:Date.now(), heure, libelle:lib, mode:'Espèces', recette:0, depense:mnt, caissier:'Admin'};
+  App.state.mouvementsCaisse.unshift(row);
   renderCaisse();
   closeModal();
   showToast('-' + fmtMontant(mnt) + ' enregistré', 'success');
+  sbCall(sb && sb.from('mouvements_caisse').upsert(row));
 }
 
 function openModalEmploye() {
@@ -3349,12 +3431,12 @@ function genererRapport(type) {
   title.textContent = titres[type] + ' — ' + now;
   if (type === 'stocks') {
     content.innerHTML = `<table><thead><tr><th>Référence</th><th>Article</th><th>Qté</th><th>Valeur</th><th>Statut</th></tr></thead><tbody>
-      ${App.state.stocks.map(s => `<tr><td>${s.ref}</td><td>${s.nom}</td><td>${s.qte} ${s.unit}</td><td>${fmtMontant(s.qte*s.prix)}</td><td>${s.statut}</td></tr>`).join('')}
+      ${App.state.stocks.map(s => `<tr><td>${esc(s.ref)}</td><td>${esc(s.nom)}</td><td>${s.qte} ${esc(s.unit)}</td><td>${fmtMontant(s.qte*s.prix)}</td><td>${esc(s.statut)}</td></tr>`).join('')}
       <tr style="font-weight:600;"><td colspan="3">TOTAL VALORISATION</td><td colspan="2" style="color:var(--gold)">${fmtMontant(App.state.stocks.reduce((acc,s)=>acc+s.qte*s.prix,0))}</td></tr>
     </tbody></table>`;
   } else if (type === 'caisse') {
     content.innerHTML = `<table><thead><tr><th>Heure</th><th>Libellé</th><th>Mode</th><th>Recette</th><th>Dépense</th></tr></thead><tbody>
-      ${App.state.mouvementsCaisse.map(m => `<tr><td>${m.heure}</td><td>${m.libelle}</td><td>${m.mode}</td><td>${m.recette?'+'+fmtMontant(m.recette):'—'}</td><td>${m.depense?'-'+fmtMontant(m.depense):'—'}</td></tr>`).join('')}
+      ${App.state.mouvementsCaisse.map(m => `<tr><td>${esc(m.heure)}</td><td>${esc(m.libelle)}</td><td>${esc(m.mode)}</td><td>${m.recette?'+'+fmtMontant(m.recette):'—'}</td><td>${m.depense?'-'+fmtMontant(m.depense):'—'}</td></tr>`).join('')}
     </tbody></table>`;
   } else {
     content.innerHTML = `<p style="color:var(--text-muted);padding:16px;">Rapport "${titres[type]}" généré le ${now}.<br>Données basées sur l'état actuel du système.</p>`;
@@ -3365,44 +3447,13 @@ function genererRapport(type) {
 // ======= MODULE ACCÈS & CARTES =======
 
 function initAccesData() {
-  // Cartes initiales
-  App.state.cartes = [
-    {uid:'A3:F2:1B:9C', chambre:'101', guest:'M. Kouadio', type:'guest',  debut:'2025-06-03', fin:'2025-06-05', statut:'expired'},
-    {uid:'B7:C1:44:DE', chambre:'201', guest:'M. Traoré',  type:'guest',  debut:'2025-06-04', fin:'2025-06-07', statut:'active'},
-    {uid:'F0:12:88:A1', chambre:'202', guest:'STE PALMCI', type:'guest',  debut:'2025-06-01', fin:'2025-06-06', statut:'active'},
-    {uid:'00:AA:BB:CC', chambre:'ALL', guest:'Coulibaly M.',type:'staff',  debut:'2025-01-01', fin:'2025-12-31', statut:'active'},
-    {uid:'FF:E3:99:12', chambre:'301', guest:'M. Diabaté', type:'guest',  debut:'2025-06-05', fin:'2025-06-09', statut:'active'},
-    {uid:'11:22:33:44', chambre:'204', guest:'M. Koné',    type:'guest',  debut:'2025-06-04', fin:'2025-06-06', statut:'expired'},
-    {uid:'99:AB:CD:EF', chambre:'MASTER', guest:'Admin',   type:'master', debut:'2025-01-01', fin:'2025-12-31', statut:'active'},
-  ];
-
-  // Logs accès simulés
-  const rooms = ['101','201','202','301','R01','Entrée principale','Piscine'];
-  const statuses = ['granted','granted','granted','granted','denied','expired'];
-  const guests = ['M. Kouadio','M. Traoré','STE PALMCI','M. Diabaté','M. Koné','Inconnu'];
-  const uids = ['A3:F2:1B:9C','B7:C1:44:DE','F0:12:88:A1','FF:E3:99:12','11:22:33:44','??:??:??:??'];
+  // Pas de cartes ni de journal d'accès de démonstration : le module démarre vide.
+  App.state.cartes = [];
   App.state.accessLogs = [];
-  const now = new Date();
-  for (let i = 0; i < 30; i++) {
-    const d = new Date(now - i * 18 * 60000);
-    const ri = Math.floor(Math.random() * rooms.length);
-    const si = Math.floor(Math.random() * statuses.length);
-    const gi = Math.min(si, guests.length - 1);
-    App.state.accessLogs.push({
-      id: i,
-      timestamp: d.toISOString(),
-      chambre: rooms[ri],
-      guest: statuses[si] === 'denied' ? 'Inconnu' : guests[gi],
-      uid: statuses[si] === 'denied' ? '??:??:??:??' : uids[gi],
-      type: si < 4 ? 'guest' : (si === 4 ? 'staff' : 'guest'),
-      statut: statuses[si],
-      detail: statuses[si] === 'granted' ? 'Porte ouverte' : statuses[si] === 'denied' ? 'Carte non reconnue' : 'Carte expirée'
-    });
-  }
 }
 
 function renderAccesModule() {
-  if (!App.state.cartes.length) initAccesData();
+  if (!App.state._accesInit) { initAccesData(); App.state._accesInit = true; }
   populateEncoderSelect();
   populateLogChambreFilter();
   renderAccessLogs();
@@ -3792,20 +3843,10 @@ function filterEmployes(q) {
   });
 }
 
-// Congés data
-App.state.conges = [
-  {employe:'Coulibaly Moussa', type:'Annuel', debut:'2025-06-10', fin:'2025-06-20', jours:10, statut:'approuve'},
-  {employe:'Koné Awa',         type:'Maladie', debut:'2025-06-05', fin:'2025-06-07', jours:2,  statut:'approuve'},
-];
-App.state.absences = [
-  {employe:'Bamba Seydou', date:'03/06/2025', motif:'Absence non justifiée', justifie:false},
-  {employe:'Diallo Fatou',  date:'01/06/2025', motif:'Convocation médicale',  justifie:true},
-];
-App.state.evaluations = [
-  {matricule:'EMP-001', employe:'Coulibaly Moussa', poste:'Réceptionniste', periode:'Q1 2025', ponct:4, qualite:5, client:4, note:4.3, appr:'Très bien'},
-  {matricule:'EMP-002', employe:'Koné Awa',         poste:'Femme de chambre', periode:'Q1 2025', ponct:5, qualite:4, client:5, note:4.7, appr:'Excellent'},
-  {matricule:'EMP-003', employe:'Bamba Seydou',     poste:'Cuisinier',        periode:'Q1 2025', ponct:3, qualite:4, client:4, note:3.7, appr:'Bien'},
-];
+// Congés / absences / évaluations : aucune donnée de démonstration.
+App.state.conges = [];
+App.state.absences = [];
+App.state.evaluations = [];
 
 function renderConges() {
   const tbody = document.getElementById('tbody-conges');
@@ -4012,8 +4053,6 @@ function switchTiersTab(tabId) {
   });
 }
 
-// ======= RENDERCLIENTS upgrade =======
-const _origRenderClients = typeof renderClients !== 'undefined' ? renderClients : null;
 function renderClients() {
   const tbody = document.getElementById('tbody-clients');
   if (!tbody) return;
@@ -4035,7 +4074,7 @@ function renderClients() {
       <td>${c.sejours||0}</td>
       <td><span style="font-weight:600;color:var(--gold-dark);">${(c.points||0).toLocaleString()}</span> pts<br><span style="font-size:10px;color:var(--text-muted);">${niveauFn(c.sejours||0)}</span></td>
       <td style="font-size:12px;">${((c.depenses||0)/1000).toFixed(0)} K FCFA</td>
-      <td><button class="btn btn-sm btn-secondary" onclick="editClient(this)">✏️</button> <button class="btn btn-sm btn-danger" onclick="deleteItem(this)">🗑</button></td>
+      <td><button class="btn btn-sm btn-secondary" onclick="editClient(${c.id})">✏️</button> <button class="btn btn-sm btn-danger" onclick="deleteClient(${c.id})">🗑</button></td>
     </tr>`;
   }).join('') || '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:20px;">Aucun client enregistré</td></tr>';
   updateClientsKPIs();
