@@ -1116,6 +1116,8 @@ textarea { resize: vertical; min-height: 80px; }
           <div class="tab active" onclick="switchTab(this,'resto-tabs','tab-commandes')">Commandes</div>
           <div class="tab" onclick="switchTab(this,'resto-tabs','tab-carte')">Carte / Menu</div>
           <div class="tab" onclick="switchTab(this,'resto-tabs','tab-bar')">Bar</div>
+          <div class="tab" onclick="switchTab(this,'resto-tabs','tab-caisse-resto')">🍽️ Caisse Restaurant</div>
+          <div class="tab" onclick="switchTab(this,'resto-tabs','tab-caisse-bar')">🍹 Caisse Bar</div>
         </div>
         <div id="resto-tabs">
           <div id="tab-commandes">
@@ -1171,6 +1173,56 @@ textarea { resize: vertical; min-height: 80px; }
                     <tr><td>Whisky J.W. Black</td><td>Spiritueux</td><td>4 500 FCFA</td><td><span class="badge badge-amber">6 btl</span></td></tr>
                     <tr><td>Eau minérale 0,5L</td><td>Eau</td><td>500 FCFA</td><td><span class="badge badge-red">12 btl</span></td></tr>
                   </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div id="tab-caisse-resto" style="display:none;">
+            <div class="grid-2" style="margin-bottom:16px;">
+              <div class="panel">
+                <div class="panel-body" style="text-align:center;padding:24px;">
+                  <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.1em;">Total du jour — Caisse Restaurant</div>
+                  <div style="font-family:'Poppins',sans-serif;font-size:36px;color:var(--green);" id="total-caisse-resto">0 FCFA</div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-body btn-group" style="align-items:center;">
+                  <button class="btn btn-success" onclick="openModalMouvementCaisse('Restaurant','recette')">+ Recette</button>
+                  <button class="btn btn-danger" onclick="openModalMouvementCaisse('Restaurant','depense')">- Dépense</button>
+                </div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-header"><div class="panel-title">Mouvements — Caisse Restaurant</div></div>
+              <div class="panel-body" style="padding:0;">
+                <table>
+                  <thead><tr><th>Heure</th><th>Libellé</th><th>Mode paiement</th><th>Recette</th><th>Dépense</th></tr></thead>
+                  <tbody id="tbody-caisse-resto"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div id="tab-caisse-bar" style="display:none;">
+            <div class="grid-2" style="margin-bottom:16px;">
+              <div class="panel">
+                <div class="panel-body" style="text-align:center;padding:24px;">
+                  <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.1em;">Total du jour — Caisse Bar</div>
+                  <div style="font-family:'Poppins',sans-serif;font-size:36px;color:var(--green);" id="total-caisse-bar">0 FCFA</div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-body btn-group" style="align-items:center;">
+                  <button class="btn btn-success" onclick="openModalMouvementCaisse('Bar','recette')">+ Recette</button>
+                  <button class="btn btn-danger" onclick="openModalMouvementCaisse('Bar','depense')">- Dépense</button>
+                </div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-header"><div class="panel-title">Mouvements — Caisse Bar</div></div>
+              <div class="panel-body" style="padding:0;">
+                <table>
+                  <thead><tr><th>Heure</th><th>Libellé</th><th>Mode paiement</th><th>Recette</th><th>Dépense</th></tr></thead>
+                  <tbody id="tbody-caisse-bar"></tbody>
                 </table>
               </div>
             </div>
@@ -2803,6 +2855,63 @@ function renderCaisse() {
       <td style="color:var(--text-muted)">${esc(m.caissier)}</td>
     </tr>
   `).join('');
+  renderCaisseDept('Restaurant', 'tbody-caisse-resto', 'total-caisse-resto');
+  renderCaisseDept('Bar', 'tbody-caisse-bar', 'total-caisse-bar');
+}
+
+function renderCaisseDept(dept, tbodyId, totalId) {
+  const tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  const rows = App.state.mouvementsCaisse.filter(m => m.departement === dept);
+  tbody.innerHTML = rows.map(m => `
+    <tr>
+      <td style="font-family:'Inter',monospace;font-size:11px">${esc(m.heure)}</td>
+      <td>${esc(m.libelle)}</td>
+      <td><span class="badge badge-muted">${esc(m.mode)}</span></td>
+      <td style="color:var(--green)">${m.recette ? '+'+fmtMontant(m.recette) : '—'}</td>
+      <td style="color:var(--red)">${m.depense ? '-'+fmtMontant(m.depense) : '—'}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">Aucun mouvement</td></tr>';
+  const total = rows.reduce((acc, m) => acc + (m.recette||0) - (m.depense||0), 0);
+  const totalEl = document.getElementById(totalId);
+  if (totalEl) totalEl.textContent = fmtMontant(total);
+}
+
+function openModalMouvementCaisse(dept, type) {
+  const isRecette = type === 'recette';
+  openModal((isRecette ? 'Recette' : 'Dépense') + ' — Caisse ' + dept, `
+    <div class="form-grid">
+      <div class="form-group span-2"><label>Libellé</label><input id="m-mvtc-lib" type="text" placeholder="${isRecette ? 'Description de la recette' : 'Description de la dépense'}"></div>
+      <div class="form-group"><label>Montant (FCFA)</label><input id="m-mvtc-mnt" type="number"></div>
+      <div class="form-group"><label>Mode</label>
+        <select id="m-mvtc-mode"><option>Espèces</option><option>Wave</option><option>Orange Money</option><option>MTN MoMo</option><option>Carte bancaire</option><option>Virement</option></select>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Annuler</button>
+    <button class="btn ${isRecette ? 'btn-primary' : 'btn-danger'}" onclick="saveMouvementCaisse('${dept}','${type}')">Valider</button>
+  `);
+}
+
+function saveMouvementCaisse(dept, type) {
+  const lib = document.getElementById('m-mvtc-lib').value.trim();
+  const mnt = +document.getElementById('m-mvtc-mnt').value;
+  if (!lib || !mnt) { showToast('Données requises', 'error'); return; }
+  const now = new Date();
+  const heure = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+  const row = {
+    id: Date.now(), heure, libelle: lib,
+    mode: document.getElementById('m-mvtc-mode').value,
+    recette: type === 'recette' ? mnt : 0,
+    depense: type === 'depense' ? mnt : 0,
+    caissier: 'Admin',
+    departement: dept
+  };
+  App.state.mouvementsCaisse.unshift(row);
+  renderCaisse();
+  closeModal();
+  showToast((type === 'recette' ? '+' : '-') + fmtMontant(mnt) + ' — Caisse ' + dept, 'success');
+  sbCall(sb && sb.from('mouvements_caisse').upsert(row));
 }
 
 function renderEmployes() {
@@ -3323,7 +3432,7 @@ function saveRecette() {
   if (!lib || !mnt) { showToast('Données requises', 'error'); return; }
   const now = new Date();
   const heure = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
-  const row = {id:Date.now(), heure, libelle:lib, mode:document.getElementById('m-rec-mode').value, recette:mnt, depense:0, caissier:'Admin'};
+  const row = {id:Date.now(), heure, libelle:lib, mode:document.getElementById('m-rec-mode').value, recette:mnt, depense:0, caissier:'Admin', departement:'Général'};
   App.state.mouvementsCaisse.unshift(row);
   renderCaisse();
   closeModal();
@@ -3352,7 +3461,7 @@ function saveDepense() {
   if (!lib || !mnt) { showToast('Données requises', 'error'); return; }
   const now = new Date();
   const heure = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
-  const row = {id:Date.now(), heure, libelle:lib, mode:'Espèces', recette:0, depense:mnt, caissier:'Admin'};
+  const row = {id:Date.now(), heure, libelle:lib, mode:'Espèces', recette:0, depense:mnt, caissier:'Admin', departement:'Général'};
   App.state.mouvementsCaisse.unshift(row);
   renderCaisse();
   closeModal();
